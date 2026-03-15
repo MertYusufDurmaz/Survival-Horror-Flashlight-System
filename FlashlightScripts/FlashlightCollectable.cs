@@ -1,53 +1,39 @@
 using UnityEngine;
+using UnityEngine.Events;
 
+[RequireComponent(typeof(Rigidbody))]
 public class FlashlightCollectable : MonoBehaviour, ICollectable, ITargetable
 {
+    [Header("References")]
     [SerializeField] private FlashlightController flashlightController;
     [SerializeField] private ItemData itemData;
+
+    [Header("Events")]
+    [Tooltip("Fener toplandÄ±ÄŸÄ±nda Ã§alÄ±ÅŸacak olaylar (Save iÅŸlemi, GÃ¶rev tamamlama, Envantere ekleme)")]
+    public UnityEvent onFlashlightCollected;
 
     public ItemData ItemDataProperty => itemData;
 
     void Awake()
     {
         if (flashlightController == null)
-        {
             flashlightController = GetComponent<FlashlightController>();
-        }
 
         Rigidbody rb = GetComponent<Rigidbody>();
-        if (rb != null)
-        {
-            rb.isKinematic = false;
-        }
+        if (rb != null) rb.isKinematic = false;
     }
 
     public void Collect(Transform collectorHand)
     {
-        // --- BU KISIM EKSÝKTÝ, ÞÝMDÝ EKLENDÝ ---
-        // Fener alýndýðýnda ID'sini SaveManager'a bildir
-        UniqueID uid = GetComponent<UniqueID>();
-        if (uid != null)
-        {
-            if (GameSaveManager.Instance != null)
-            {
-                GameSaveManager.Instance.MarkObjectAsCollected(uid.uniqueID);
-                Debug.Log($"Fener Toplandý ve Kaydedildi! ID: {uid.uniqueID}");
-            }
-        }
-        else
-        {
-            Debug.LogWarning("Fener üzerinde UniqueID scripti bulunamadý! Kayýt yapýlamaz.");
-        }
-        // ---------------------------------------
+        // TÃ¼m dÄ±ÅŸ baÄŸÄ±mlÄ±lÄ±klarÄ± (Save, Task, Inventory) bu Event Ã¼zerinden yÃ¶neteceÄŸiz.
+        // Inspector'dan yÃ¶neticilerinizi bu event'e baÄŸlayabilirsiniz.
+        onFlashlightCollected?.Invoke();
 
         transform.SetParent(collectorHand);
         transform.localPosition = Vector3.zero;
         transform.localRotation = Quaternion.identity;
-
-        // Ölçeði düzelt (Cýlýz ýþýk sorunu için garanti)
         transform.localScale = Vector3.one;
 
-        // Objenin kendisini aktif tut (Scriptler çalýþsýn)
         gameObject.SetActive(true);
 
         Rigidbody rb = GetComponent<Rigidbody>();
@@ -56,13 +42,10 @@ public class FlashlightCollectable : MonoBehaviour, ICollectable, ITargetable
         if (flashlightController != null)
         {
             flashlightController.enabled = true;
-            // El referansýný ve kamerayý verelim
             flashlightController.SetupFlashlight(collectorHand, Camera.main);
         }
 
-        // Toplama iþlemi bittiði için bu scripti devre dýþý býrakabiliriz
-        // ama objeyi kapatmýyoruz.
-        this.enabled = false;
+        this.enabled = false; // Toplanma scriptini kapat
     }
 
     public void Drop(Vector3 dropPosition, Quaternion dropRotation)
@@ -83,36 +66,22 @@ public class FlashlightCollectable : MonoBehaviour, ICollectable, ITargetable
             flashlightController.enabled = false;
         }
 
-        this.enabled = true;
+        this.enabled = true; // Tekrar toplanabilmesi iÃ§in aÃ§
     }
 
     public void AddToInventory()
     {
+        // EÄŸer envanter sisteminiz bu metodu Ã¶zel olarak Ã§aÄŸÄ±rÄ±yorsa, 
+        // iÃ§eriÄŸini Event'ler Ã¼zerinden yÃ¼rÃ¼tecek ÅŸekilde silebilir 
+        // veya doÄŸrudan projenizdeki InventoryManager'a entegre bÄ±rakabilirsiniz.
         if (itemData != null && InventoryManager.Instance != null)
         {
-            // Envantere eklemeden önce de ID'yi bildirmeliyiz (Güvenlik için)
-            UniqueID uid = GetComponent<UniqueID>();
-            if (uid != null && GameSaveManager.Instance != null)
-            {
-                GameSaveManager.Instance.MarkObjectAsCollected(uid.uniqueID);
-            }
-
             InventoryManager.Instance.AddItem(itemData, this);
-
-            if (TaskManager.Instance != null)
-            {
-                TaskManager.Instance.CompleteTask("task_find_flashlight");
-                Debug.Log("Fener görevi tamamlandý.");
-            }
-        }
-        else
-        {
-            Debug.LogWarning("Flashlight'ýn ItemData'sý veya InventoryManager eksik.");
         }
     }
 
     public void ToggleHighlight(bool highlight)
     {
-        // Debug.Log(gameObject.name + " Highlight: " + highlight);
+        // Shader highlight iÅŸlemleri buraya eklenebilir.
     }
 }
