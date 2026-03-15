@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Events;
 
 public class FlashlightController : MonoBehaviour
 {
@@ -6,15 +7,28 @@ public class FlashlightController : MonoBehaviour
     [SerializeField] private Light spotLight;
     [SerializeField] private Camera playerCamera;
 
+    [Header("Controls")]
+    public KeyCode toggleKey = KeyCode.F;
+    public KeyCode reloadKey = KeyCode.R;
+
     [Header("Battery Settings")]
     public float batteryHealth = 0;
     public int batteryCount = 0;
-
     [SerializeField] private float maxBatteryHealth = 60f;
 
     [Header("Stun Settings")]
     [SerializeField] private float stunRange = 10f;
     [SerializeField] private float stunDrainMultiplier = 4f;
+    [Tooltip("DÃ¼ÅŸmanÄ± tespit etmek iÃ§in kullanÄ±lacak katman")]
+    [SerializeField] private LayerMask enemyLayerMask;
+
+    [Header("Events (Audio & UI)")]
+    public UnityEvent onFlashlightToggle;
+    public UnityEvent onFlashlightReload;
+    public UnityEvent onFlashlightGlitch;
+    public UnityEvent onGlitchStop;
+    public UnityEvent onBatteryEmpty;
+    public UnityEvent<string> onNotificationTriggered;
 
     private bool isOpen = false;
     public bool isLightOn => isOpen;
@@ -25,8 +39,6 @@ public class FlashlightController : MonoBehaviour
 
     private Transform playerHand;
     private bool hasNotifiedEmpty = false;
-
-    // Bildirim Spam Engelleyici
     private float notificationCooldown = 0f;
 
     void Start()
@@ -38,21 +50,16 @@ public class FlashlightController : MonoBehaviour
     public void SetupFlashlight(Transform handRef, Camera camRef)
     {
         playerHand = handRef;
-        playerCamera = camRef;
-        if (playerCamera == null) playerCamera = Camera.main;
+        playerCamera = camRef != null ? camRef : Camera.main;
         UpdateLightState();
     }
 
-    void OnEnable() { InitializeReferences(); }
-
     public void InitializeReferences()
     {
-        if (playerCamera != null && playerHand != null) return;
         if (playerCamera == null) playerCamera = Camera.main;
-        if (playerHand == null)
+        if (playerHand == null && transform.parent != null)
         {
-            GameObject player = GameObject.FindWithTag("Player");
-            if (player != null) playerHand = player.transform.Find("Hand");
+            playerHand = transform.parent;
         }
         UpdateLightState();
     }
@@ -64,73 +71,78 @@ public class FlashlightController : MonoBehaviour
 
     void Update()
     {
-        if (playerHand == null) { InitializeReferences(); return; }
-        if (transform.parent != playerHand) return;
+        if (playerHand == null || transform.parent != playerHand) return;
 
-        // Cooldown süresini her saniye azalt
-        if (notificationCooldown > 0)
-        {
-            notificationCooldown -= Time.deltaTime;
-        }
+        if (notificationCooldown > 0) notificationCooldown -= Time.deltaTime;
 
-        // --- F TUÞU ---
-        if (Input.GetKeyDown(KeyCode.F))
+        HandleInputs();
+        HandleBatteryAndStun();
+        HandleBlinking();
+    }
+
+    private void HandleInputs()
+    {
+        if (Input.GetKeyDown(toggleKey))
         {
             if (batteryHealth > 0)
             {
                 ToggleLight();
-                if (VoiceManager.Instance != null) VoiceManager.Instance.PlayFlashlightToggle();
+                onFlashlightToggle?.Invoke();
             }
             else
             {
-                if (VoiceManager.Instance != null) VoiceManager.Instance.PlayFlashlightToggle();
-
+                onFlashlightToggle?.Invoke();
                 if (isOpen) ToggleLightOff();
 
-                // Bildirim Mantýðý
                 if (notificationCooldown <= 0)
                 {
-                    if (NotificationManager.Instance != null)
-                    {
-                        if (batteryCount > 0)
-                            NotificationManager.Instance.ShowNotification(NotificationType.Uyari,
-                               "Pili Deðiþtirmek için [R]", KeyCode.R);
-                        else
-                            NotificationManager.Instance.ShowNotification(NotificationType.Warning,
-                                "Pil Bulunmuyor!");
-                    }
+                    string msg = batteryCount > 0 ? "Pili DeÄŸiÅŸtirmek iÃ§in [" + reloadKey.ToString() + "]" : "Pil Bulunmuyor!";
+                    onNotificationTriggered?.Invoke(msg);
                     notificationCooldown = 2.0f;
                 }
             }
         }
 
-        // R Tuþu
-        if (Input.GetKeyDown(KeyCode.R)) ReloadBattery();
+        if (Input.GetKeyDown(reloadKey)) ReloadBattery();
+    }
 
-        // Fener Açýk ve Pil Var
+    private void HandleBatteryAndStun()
+    {
         if (isOpen && batteryHealth > 0)
         {
             float currentDrain = 1f;
+            
+            // DÃ¼ÅŸman sersemletme (Raycast)
             if (playerCamera != null)
             {
-                RaycastHit hit;
-                if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out hit, stunRange))
+                if (Physics.Raycast(playerCamera.transform.position, playerCamera.transform.forward, out RaycastHit hit, stunRange, enemyLayerMask))
                 {
                     EnemyAI enemy = hit.collider.GetComponent<EnemyAI>();
-                    if (enemy != null) { enemy.TakeStun(); currentDrain = stunDrainMultiplier; }
+                    if (enemy != null) 
+                    { 
+                        enemy.TakeStun(); 
+                        currentDrain = stunDrainMultiplier; 
+                    }
                 }
             }
 
             batteryHealth -= Time.deltaTime * currentDrain;
 
-            // Pil azaldýysa (Son 2 saniye) blink baþlasýn
             if (batteryHealth <= 2 && !isBlinking)
             {
                 isBlinking = true;
             }
-        }
 
-        // --- BLINK VE GLITCH SESÝ MANTIÐI ---
+            // Pil bitti
+            if (batteryHealth <= 0 && !hasNotifiedEmpty)
+            {
+                HandleEmptyBattery();
+            }
+        }
+    }
+
+    private void HandleBlinking()
+    {
         if (isBlinking && isOpen && batteryHealth > 0)
         {
             blinkTimer += Time.deltaTime;
@@ -139,15 +151,9 @@ public class FlashlightController : MonoBehaviour
                 spotLight.enabled = !spotLight.enabled;
                 blinkTimer = 0f;
 
-                // Iþýk her söndüðünde glitch sesi çalmaya çalýþ
-                if (!spotLight.enabled && VoiceManager.Instance != null)
+                if (!spotLight.enabled && batteryHealth > 0.05f)
                 {
-                    // 20 Saniyelik ses olduðu için VoiceManager içinde kontrol ediyoruz,
-                    // eðer zaten çalýyorsa baþtan baþlatmayacak.
-                    if (batteryHealth > 0.05f)
-                    {
-                        VoiceManager.Instance.PlayFlashlightGlitch();
-                    }
+                    onFlashlightGlitch?.Invoke();
                 }
             }
         }
@@ -155,39 +161,25 @@ public class FlashlightController : MonoBehaviour
         {
             if (spotLight != null && !spotLight.enabled) spotLight.enabled = true;
         }
+    }
 
-        // --- PÝL BÝTTÝÐÝ AN ---
-        if (batteryHealth <= 0 && !hasNotifiedEmpty)
+    private void HandleEmptyBattery()
+    {
+        if (isOpen)
         {
-            if (isOpen)
-            {
-                ToggleLightOff();
-                if (VoiceManager.Instance != null) VoiceManager.Instance.PlayFlashlightToggle();
-            }
-
-            batteryHealth = 0;
-            isBlinking = false;
-
-            // 1. Iþýðý Kapat
-            if (spotLight != null) spotLight.enabled = false;
-
-            // 2. GLITCH SESÝNÝ ZORLA DURDUR (En önemli kýsým burasý)
-            if (VoiceManager.Instance != null) VoiceManager.Instance.StopFlashlightGlitch();
-
-            hasNotifiedEmpty = true;
-
-            if (NotificationManager.Instance != null)
-            {
-                NotificationManager.Instance.ShowNotification(NotificationType.PilBildirimi,
-                    $"Pil Tükendi. (Kalan: {batteryCount})");
-
-                if (batteryCount > 0)
-                {
-                    NotificationManager.Instance.ShowNotification(NotificationType.PilBildirimi,
-                        "Pili Deðiþtirmek için [R]", KeyCode.R);
-                }
-            }
+            ToggleLightOff();
+            onFlashlightToggle?.Invoke();
         }
+
+        batteryHealth = 0;
+        isBlinking = false;
+        if (spotLight != null) spotLight.enabled = false;
+
+        onGlitchStop?.Invoke();
+        onBatteryEmpty?.Invoke();
+        hasNotifiedEmpty = true;
+
+        onNotificationTriggered?.Invoke($"Pil TÃ¼kendi. (Kalan: {batteryCount})");
     }
 
     private void ToggleLight()
@@ -197,47 +189,31 @@ public class FlashlightController : MonoBehaviour
         isBlinking = false;
         blinkTimer = 0f;
 
-        // Eðer feneri elle kapatýrsak da glitch sesini keselim
-        if (!isOpen && VoiceManager.Instance != null)
-        {
-            VoiceManager.Instance.StopFlashlightGlitch();
-        }
+        if (!isOpen) onGlitchStop?.Invoke();
     }
 
     public void ToggleLightOff()
     {
         isOpen = false;
         UpdateLightState();
-
-        // Zorla kapatýldýðýnda da sesi kes
-        if (VoiceManager.Instance != null)
-        {
-            VoiceManager.Instance.StopFlashlightGlitch();
-        }
+        onGlitchStop?.Invoke();
     }
 
     private void ReloadBattery()
     {
         if (batteryCount > 0 && batteryHealth < maxBatteryHealth)
         {
-            // Pili yenilerken de eski cýzýrtýyý keselim
-            if (VoiceManager.Instance != null) VoiceManager.Instance.StopFlashlightGlitch();
-
+            onGlitchStop?.Invoke();
             batteryHealth = maxBatteryHealth;
             batteryCount--;
             hasNotifiedEmpty = false;
-
-            if (VoiceManager.Instance != null) VoiceManager.Instance.PlayFlashlightReload();
-
-            Debug.Log($"Pil Yenilendi. Kalan Pil: {batteryCount}");
+            
+            onFlashlightReload?.Invoke();
         }
-        else if (batteryCount <= 0)
+        else if (batteryCount <= 0 && notificationCooldown <= 0)
         {
-            if (NotificationManager.Instance != null && notificationCooldown <= 0)
-            {
-                NotificationManager.Instance.ShowNotification(NotificationType.Warning, "Pil Bulunmuyor!");
-                notificationCooldown = 2.0f;
-            }
+            onNotificationTriggered?.Invoke("Pil Bulunmuyor!");
+            notificationCooldown = 2.0f;
         }
     }
 
